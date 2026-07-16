@@ -27,4 +27,18 @@ npm run dev
 
 ## 部署
 
-Vercel 生产部署，域名：`https://ashare.saveme505.help`
+- 生产域名：`https://ashare.saveme505.help` / `https://stock.saveme505.help`
+- GitHub：`https://github.com/LeoLee0812/ashare-recommend`
+- Vercel 已关联 Git：`main` 分支 push 自动生产部署
+
+## 本地自动提交推送
+
+本机服务 `ashare-auto-git.service` 监听源码改动，防抖后自动 `git commit + push`，从而触发 Vercel 部署。
+
+```bash
+systemctl status ashare-auto-git
+# 手动立即同步一次
+/root/projects/ashare-recommend/scripts/auto-git-sync.sh once
+# 日志
+tail -f /var/log/ashare-auto-git.log
+```
