@@ -42,3 +42,4 @@ systemctl status ashare-auto-git
 # 日志
 tail -f /var/log/ashare-auto-git.log
 ```
+
