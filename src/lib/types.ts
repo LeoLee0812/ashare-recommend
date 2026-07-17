@@ -58,3 +58,108 @@ export interface StrategyMeta {
   name: string;
   desc: string;
 }
+
+/** 板块（行业/概念） */
+export interface SectorBoard {
+  code: string; // BKxxxx
+  name: string;
+  price: number;
+  changePercent: number;
+  changeAmount: number;
+  amount: number;
+  upCount?: number;
+  downCount?: number;
+  leadStock?: string;
+  type: "industry" | "concept";
+}
+
+/** ETF / 场内基金 */
+export interface EtfQuote {
+  code: string;
+  name: string;
+  price: number;
+  changePercent: number;
+  changeAmount: number;
+  volume: number;
+  amount: number;
+  turnover: number;
+  high: number;
+  low: number;
+  open: number;
+  prevClose: number;
+  market: "SH" | "SZ";
+  totalMV?: number;
+}
+
+/** K线 / 净值点 */
+export interface NavPoint {
+  date: string;
+  open?: number;
+  close: number;
+  high?: number;
+  low?: number;
+  volume?: number;
+  amount?: number;
+  changePercent?: number;
+  nav?: number; // 单位净值（若有）
+  accNav?: number; // 累计净值
+}
+
+/** 持仓条目（前端 localStorage + API 建议） */
+export interface HoldingItem {
+  code: string;
+  name: string;
+  type: "etf" | "fund" | "stock" | "sector";
+  shares?: number; // 份额
+  cost?: number; // 成本净值/价
+  weight?: number; // 仓位占比 %
+  note?: string;
+  sectorTags?: string[]; // 关联板块标签
+}
+
+export type AdviceAction = "加仓" | "减仓" | "持有" | "观望" | "分批建仓" | "止盈" | "止损观察";
+
+export interface HoldingAdvice {
+  code: string;
+  name: string;
+  action: AdviceAction;
+  confidence: number; // 0-100
+  horizon: string;
+  reasons: string[];
+  risk: string;
+  price?: number;
+  changePercent?: number;
+  pnlPct?: number; // 相对成本盈亏%
+}
+
+/** 板块三维分析 */
+export interface SectorAnalysis {
+  code: string;
+  name: string;
+  changePercent: number;
+  amount: number;
+  technical: {
+    summary: string;
+    position: string;
+    signals: string[];
+    score: number;
+  };
+  news: {
+    summary: string;
+    catalysts: string[];
+    risks: string[];
+    score: number;
+  };
+  policy: {
+    summary: string;
+    supports: string[];
+    score: number;
+  };
+  fundView: {
+    relatedEtfs: string[];
+    action: AdviceAction;
+    confidence: number;
+    comment: string;
+  };
+  updatedAt: string;
+}
