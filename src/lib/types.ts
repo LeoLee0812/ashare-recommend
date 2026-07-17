@@ -110,9 +110,13 @@ export interface HoldingItem {
   code: string;
   name: string;
   type: "etf" | "fund" | "stock" | "sector";
-  shares?: number; // 份额
-  cost?: number; // 成本净值/价
-  weight?: number; // 仓位占比 %
+  /** 持仓金额（元，当前市值）——主录入方式 */
+  amount?: number;
+  /** 持有收益（元，累计浮盈/浮亏）——主录入方式 */
+  profit?: number;
+  shares?: number; // 份额（可选）
+  cost?: number; // 成本净值/价（可由金额+收益反推）
+  weight?: number; // 仓位占比 %（可由金额自动计算）
   note?: string;
   sectorTags?: string[]; // 关联板块标签
 }
@@ -130,6 +134,14 @@ export interface HoldingAdvice {
   price?: number;
   changePercent?: number;
   pnlPct?: number; // 相对成本盈亏%
+  /** 持仓金额（元） */
+  amount?: number;
+  /** 持有收益（元） */
+  profit?: number;
+  /** 成本金额 = 持仓金额 - 收益 */
+  costAmount?: number;
+  /** 仓位占比 %（按金额加权） */
+  weight?: number;
 }
 
 /** 板块三维分析 */
