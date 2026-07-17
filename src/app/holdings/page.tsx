@@ -1,7 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
-import type { HoldingAdvice, HoldingItem, NavPoint, StockQuote } from "@/lib/types";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type {
+  FundInfo,
+  HoldingAdvice,
+  HoldingItem,
+  NavPoint,
+  StockQuote,
+} from "@/lib/types";
 import { NavChart } from "@/components/NavChart";
 import {
   NavBar,
@@ -31,9 +37,9 @@ function migrateLegacy(h: HoldingItem): LocalHolding {
   // 旧版：weight + cost(净值) → 新版优先 amount/profit；无金额则保留旧字段兼容
   return {
     id: (h as LocalHolding).id || uid(),
-    code: String(h.code || "").replace(/^(sh|sz)/i, ""),
+    code: String(h.code || "").replace(/^(sh|sz|of)/i, ""),
     name: h.name || String(h.code || ""),
-    type: h.type || "etf",
+    type: h.type || "fund",
     amount: parseNum((h as HoldingItem).amount),
     profit: parseNum((h as HoldingItem).profit),
     weight: parseNum(h.weight),
@@ -41,6 +47,7 @@ function migrateLegacy(h: HoldingItem): LocalHolding {
     shares: parseNum(h.shares),
     note: h.note,
     sectorTags: h.sectorTags,
+    fundType: h.fundType,
   };
 }
 
@@ -93,12 +100,18 @@ export default function HoldingsPage() {
   const [portfolioPnlPct, setPortfolioPnlPct] = useState<number | undefined>();
   const [disclaimer, setDisclaimer] = useState("");
 
-  // form：代码 + 持仓金额 + 收益
+  // form：代码搜索 → 自动名称/板块 + 持仓金额 + 收益
   const [code, setCode] = useState("");
   const [name, setName] = useState("");
   const [amount, setAmount] = useState("");
   const [profit, setProfit] = useState("");
   const [note, setNote] = useState("");
+  const [sectorTags, setSectorTags] = useState<string[]>([]);
+  const [fundType, setFundType] = useState("");
+  const [searchHits, setSearchHits] = useState<FundInfo[]>([]);
+  const [searching, setSearching] = useState(false);
+  const [pickedCode, setPickedCode] = useState("");
+  const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     const local = loadLocal();
@@ -106,6 +119,63 @@ export default function HoldingsPage() {
     setHydrated(true);
     if (local[0]) setSelectedCode(local[0].code);
   }, []);
+
+  // 输入代码/名称时自动搜索支付宝基金
+  useEffect(() => {
+    const q = code.trim().replace(/^(sh|sz|of)/i, "");
+    if (searchTimer.current) clearTimeout(searchTimer.current);
+    if (!q || q.length < 2) {
+      setSearchHits([]);
+      setSearching(false);
+      return;
+    }
+    // 已选中同一代码时不再弹列表
+    if (pickedCode && pickedCode === q && name) {
+      setSearchHits([]);
+      return;
+    }
+    setSearching(true);
+    searchTimer.current = setTimeout(async () => {
+      try {
+        const res = await fetch(`/api/funds?q=${encodeURIComponent(q)}`, {
+          cache: "no-store",
+        });
+        const data = await res.json();
+        if (data.ok) {
+          const list = (data.list || []) as FundInfo[];
+          setSearchHits(list);
+          // 精确 6 位代码命中：自动回填名称与板块
+          if (/^\d{6}$/.test(q)) {
+            const exact = list.find((x) => x.code === q) || list[0];
+            if (exact && exact.code === q) {
+              setName(exact.name);
+              setSectorTags(exact.sectorTags || exact.themes || []);
+              setFundType(exact.fundType || "");
+              setPickedCode(exact.code);
+              setSearchHits([]);
+            }
+          }
+        }
+      } catch {
+        // ignore search errors
+      } finally {
+        setSearching(false);
+      }
+    }, 350);
+    return () => {
+      if (searchTimer.current) clearTimeout(searchTimer.current);
+    };
+  }, [code, pickedCode, name]);
+
+  const pickFund = (f: FundInfo) => {
+    setCode(f.code);
+    setName(f.name);
+    setSectorTags(f.sectorTags || f.themes || []);
+    setFundType(f.fundType || (f.category === "etf" ? "ETF" : ""));
+    setPickedCode(f.code);
+    setSearchHits([]);
+    setErr("");
+  };
 
   const refresh = useCallback(
     async (list: LocalHolding[]) => {
@@ -132,7 +202,7 @@ export default function HoldingsPage() {
         setPortfolioAmount(data.portfolio?.totalAmount);
         setPortfolioProfit(data.portfolio?.totalProfit);
         setPortfolioPnlPct(data.portfolio?.portfolioPnlPct);
-        // 回填名称与自动仓位
+        // 回填名称、板块与自动仓位
         if (data.holdings?.length) {
           setHoldings((prev) => {
             // 默认观察组合时不写本地
@@ -147,6 +217,12 @@ export default function HoldingsPage() {
                 ...p,
                 name: hit.name || p.name,
                 weight: hit.weight ?? p.weight,
+                sectorTags:
+                  hit.sectorTags && hit.sectorTags.length
+                    ? hit.sectorTags
+                    : p.sectorTags,
+                fundType: hit.fundType || p.fundType,
+                type: hit.type || p.type,
               };
             });
             saveLocal(next);
@@ -175,9 +251,9 @@ export default function HoldingsPage() {
   }, [hydrated]);
 
   const addHolding = () => {
-    const c = code.trim().replace(/^(sh|sz)/i, "");
+    const c = code.trim().replace(/^(sh|sz|of)/i, "");
     if (!/^\d{6}$/.test(c)) {
-      setErr("请输入 6 位基金/ETF 代码，如 512480");
+      setErr("请输入 6 位支付宝基金代码，如 110022 / 161725");
       return;
     }
     if (holdings.some((h) => h.code === c)) {
@@ -200,14 +276,22 @@ export default function HoldingsPage() {
       return;
     }
 
+    const displayName = name.trim() || c;
+    const tags =
+      sectorTags.length > 0
+        ? sectorTags
+        : undefined;
+    const looksEtf = /ETF/i.test(displayName) || fundType === "ETF";
     const item: LocalHolding = {
       id: uid(),
       code: c,
-      name: name.trim() || c,
-      type: "etf",
+      name: displayName,
+      type: looksEtf ? "etf" : "fund",
       amount: amountNum,
       profit: profitNum,
       note: note.trim() || undefined,
+      sectorTags: tags,
+      fundType: fundType || undefined,
     };
     const next = [...holdings, item];
     setHoldings(next);
@@ -218,6 +302,10 @@ export default function HoldingsPage() {
     setAmount("");
     setProfit("");
     setNote("");
+    setSectorTags([]);
+    setFundType("");
+    setPickedCode("");
+    setSearchHits([]);
     setErr("");
     refresh(next);
   };
@@ -255,10 +343,12 @@ export default function HoldingsPage() {
       : advices.map((a) => ({
           code: a.code,
           name: a.name,
-          type: "etf" as const,
+          type: "fund" as const,
           amount: a.amount,
           profit: a.profit,
           weight: a.weight,
+          sectorTags: a.sectorTags,
+          fundType: a.fundType,
         }));
 
   const selectedSeries = selectedCode ? seriesMap[selectedCode] || [] : [];
@@ -268,6 +358,7 @@ export default function HoldingsPage() {
   const selectedQuote = selectedCode
     ? quoteMap.get(selectedCode)
     : undefined;
+  const selectedHolding = displayList.find((h) => h.code === selectedCode);
 
   const updatedText = useMemo(() => {
     if (!updatedAt) return "";
@@ -286,7 +377,7 @@ export default function HoldingsPage() {
       <NavBar />
       <SiteHeader
         title="我的持仓 · 每日操作建议"
-        subtitle="按持仓金额与持有收益添加 ETF/场内基金（浏览器本地保存）。自动算仓位占比与盈亏%，附规则化操作建议与净值走势。"
+        subtitle="支付宝基金按 6 位代码搜索添加。自动识别基金名称与所属板块，录入持仓金额与持有收益后给出仓位/盈亏与操作建议。"
         onRefresh={() => refresh(holdings)}
         loading={loading}
         updatedText={updatedText}
@@ -332,19 +423,56 @@ export default function HoldingsPage() {
 
       {/* 添加持仓 */}
       <section className="panel mb-5 p-4">
-        <h2 className="mb-3 text-sm font-medium">添加持仓</h2>
+        <h2 className="mb-3 text-sm font-medium">添加支付宝基金持仓</h2>
         <div className="grid gap-2 md:grid-cols-6">
-          <input
-            value={code}
-            onChange={(e) => setCode(e.target.value)}
-            placeholder="代码 512480"
-            className="rounded-xl border border-[var(--line)] bg-black/20 px-3 py-2 text-sm outline-none focus:border-blue-400/60"
-          />
+          <div className="relative md:col-span-1">
+            <input
+              value={code}
+              onChange={(e) => {
+                setCode(e.target.value);
+                setPickedCode("");
+              }}
+              placeholder="代码 110022"
+              className="w-full rounded-xl border border-[var(--line)] bg-black/20 px-3 py-2 text-sm outline-none focus:border-blue-400/60"
+            />
+            {searching ? (
+              <div className="absolute right-2 top-2 text-[10px] text-[var(--muted)]">
+                搜…
+              </div>
+            ) : null}
+            {searchHits.length > 0 ? (
+              <div className="absolute z-20 mt-1 max-h-56 w-[min(22rem,90vw)] overflow-auto rounded-xl border border-[var(--line)] bg-[#0b1220] shadow-xl">
+                {searchHits.map((f) => (
+                  <button
+                    key={f.code}
+                    type="button"
+                    className="flex w-full flex-col gap-0.5 border-b border-[var(--line)] px-3 py-2 text-left text-sm hover:bg-white/[0.05]"
+                    onClick={() => pickFund(f)}
+                  >
+                    <div className="font-medium">
+                      {f.name}
+                      <span className="ml-2 text-xs text-[var(--muted)]">
+                        {f.code}
+                      </span>
+                    </div>
+                    <div className="flex flex-wrap gap-1 text-[11px] text-[var(--muted)]">
+                      {f.fundType ? <span>{f.fundType}</span> : null}
+                      {(f.sectorTags || []).slice(0, 3).map((t) => (
+                        <span key={t} className="tag">
+                          {t}
+                        </span>
+                      ))}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            ) : null}
+          </div>
           <input
             value={name}
             onChange={(e) => setName(e.target.value)}
-            placeholder="名称（可选）"
-            className="rounded-xl border border-[var(--line)] bg-black/20 px-3 py-2 text-sm outline-none focus:border-blue-400/60"
+            placeholder="基金名称（代码搜索自动填）"
+            className="rounded-xl border border-[var(--line)] bg-black/20 px-3 py-2 text-sm outline-none focus:border-blue-400/60 md:col-span-1"
           />
           <input
             value={amount}
@@ -370,10 +498,28 @@ export default function HoldingsPage() {
             添加
           </button>
         </div>
+        {(name || sectorTags.length > 0 || fundType) && (
+          <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+            {name ? (
+              <span className="text-[#d7e3ff]">
+                已识别：<strong>{name}</strong>
+                {fundType ? ` · ${fundType}` : ""}
+              </span>
+            ) : null}
+            {sectorTags.map((t) => (
+              <span key={t} className="tag tag-hot">
+                板块 {t}
+              </span>
+            ))}
+          </div>
+        )}
         <div className="mt-2 text-xs leading-5 text-[var(--muted)]">
-          录入方式：填<strong className="text-[#d7e3ff]">当前持仓金额</strong>
-          与<strong className="text-[#d7e3ff]">持有收益</strong>
-          （浮亏填负数）。系统自动算成本金额、盈亏%与组合仓位占比。
+          用法：在支付宝复制<strong className="text-[#d7e3ff]">6 位基金代码</strong>
+          搜索 → 自动带出<strong className="text-[#d7e3ff]">基金名称</strong>与
+          <strong className="text-[#d7e3ff]">所属板块</strong> → 再填
+          <strong className="text-[#d7e3ff]">持仓金额</strong>与
+          <strong className="text-[#d7e3ff]">持有收益</strong>
+          （浮亏填负数）。系统自动算成本、盈亏%与组合仓位。
         </div>
         <div className="mt-3 flex flex-wrap gap-2">
           <button className="btn" onClick={useDefault}>
@@ -409,6 +555,10 @@ export default function HoldingsPage() {
                   const showAmount = a?.amount ?? h.amount;
                   const showProfit = a?.profit ?? h.profit;
                   const showWeight = a?.weight ?? h.weight;
+                  const tags =
+                    a?.sectorTags ||
+                    h.sectorTags ||
+                    [];
                   return (
                     <div
                       key={(h as LocalHolding).id || h.code}
@@ -425,6 +575,16 @@ export default function HoldingsPage() {
                           </span>
                         </div>
                         <div className="mt-1 flex flex-wrap gap-1">
+                          {tags.slice(0, 4).map((t) => (
+                            <span key={t} className="tag tag-hot">
+                              {t}
+                            </span>
+                          ))}
+                          {(a?.fundType || h.fundType) && (
+                            <span className="tag">
+                              {a?.fundType || h.fundType}
+                            </span>
+                          )}
                           {a ? (
                             <span className={actionClass(a.action)}>
                               {a.action}
@@ -507,6 +667,24 @@ export default function HoldingsPage() {
                       selectedQuote?.name ||
                       selectedCode}
                   </h3>
+                  <div className="mt-1 flex flex-wrap gap-1">
+                    {(
+                      selectedAdvice?.sectorTags ||
+                      selectedHolding?.sectorTags ||
+                      []
+                    ).map((t) => (
+                      <span key={t} className="tag tag-hot">
+                        板块 {t}
+                      </span>
+                    ))}
+                    {(selectedAdvice?.fundType ||
+                      selectedHolding?.fundType) && (
+                      <span className="tag">
+                        {selectedAdvice?.fundType ||
+                          selectedHolding?.fundType}
+                      </span>
+                    )}
+                  </div>
                 </div>
                 <div className="text-right">
                   <div className="text-2xl font-semibold tabular-nums">
@@ -597,7 +775,7 @@ export default function HoldingsPage() {
           {disclaimer ||
             "持仓建议为规则推演，仅供学习研究，不构成投资建议。"}
         </p>
-        <p className="mt-1">45 秒自动刷新 · 本地持仓隐私存储</p>
+        <p className="mt-1">45 秒自动刷新 · 本地持仓隐私存储 · 支持支付宝场外基金</p>
       </footer>
     </main>
   );
