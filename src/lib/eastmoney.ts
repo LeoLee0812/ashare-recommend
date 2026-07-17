@@ -1,5 +1,6 @@
 import iconv from "iconv-lite";
-import type { EtfQuote, NavPoint, SectorBoard, StockQuote } from "./types";
+import type { EtfQuote, FundInfo, NavPoint, SectorBoard, StockQuote } from "./types";
+import { inferSectorTags } from "./analysis";
 
 const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
@@ -617,4 +618,260 @@ export async function searchEtfs(keyword: string): Promise<EtfQuote[]> {
         e.name.includes(keyword.trim())
     )
     .slice(0, 30);
+}
+
+/** 场外基金实时估值（天天基金） */
+export async function fetchFundEstimate(
+  code: string
+): Promise<{
+  code: string;
+  name: string;
+  nav?: number;
+  navDate?: string;
+  estimateNav?: number;
+  estimateChangePercent?: number;
+  estimateTime?: string;
+} | null> {
+  const pure = code.replace(/^(sh|sz|of)/i, "").trim();
+  if (!/^\d{6}$/.test(pure)) return null;
+  const url = `https://fundgz.1234567.com.cn/js/${pure}.js`;
+  try {
+    const res = await fetch(url, {
+      headers: {
+        "User-Agent": UA,
+        Referer: "https://fund.eastmoney.com/",
+      },
+      next: { revalidate: 30 },
+    });
+    if (!res.ok) return null;
+    const text = await res.text();
+    const m = text.match(/jsonpgz\((\{[\s\S]*?\})\);?/);
+    if (!m) return null;
+    const j = JSON.parse(m[1]) as Record<string, string>;
+    const nav = num(j.dwjz);
+    const estimateNav = num(j.gsz);
+    const estimateChangePercent = num(j.gszzl);
+    return {
+      code: j.fundcode || pure,
+      name: j.name || pure,
+      nav: nav > 0 ? nav : undefined,
+      navDate: j.jzrq || undefined,
+      estimateNav: estimateNav > 0 ? estimateNav : undefined,
+      estimateChangePercent: Number.isFinite(estimateChangePercent)
+        ? estimateChangePercent
+        : undefined,
+      estimateTime: j.gztime || undefined,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 支付宝/场外基金 + 场内 ETF 搜索（东财 suggest）
+ * 用代码/名称搜索，返回基金名称与主题板块
+ */
+export async function searchFunds(keyword: string): Promise<FundInfo[]> {
+  const kw = keyword.trim();
+  if (!kw) return [];
+
+  const out: FundInfo[] = [];
+  const seen = new Set<string>();
+
+  // 1) 东财基金搜索（覆盖支付宝场外基金）
+  try {
+    const url = `https://fundsuggest.eastmoney.com/FundSearch/api/FundSearchAPI.ashx?m=1&key=${encodeURIComponent(kw)}`;
+    const res = await fetch(url, {
+      headers: {
+        "User-Agent": UA,
+        Referer: "https://fund.eastmoney.com/",
+        Accept: "application/json, text/plain, */*",
+      },
+      next: { revalidate: 60 },
+    });
+    if (res.ok) {
+      const json = await res.json();
+      const datas = (json?.Datas || []) as Array<Record<string, unknown>>;
+      for (const row of datas) {
+        const code = String(row.CODE || row._id || "").trim();
+        const name = String(row.NAME || "").trim();
+        if (!code || !name || seen.has(code)) continue;
+        const bi = (row.FundBaseInfo || {}) as Record<string, unknown>;
+        const zt = (row.ZTJJInfo || []) as Array<Record<string, string>>;
+        const themes = zt
+          .map((z) => String(z.TTYPENAME || "").trim())
+          .filter(Boolean);
+        const fundType = String(bi.FTYPE || "").trim() || undefined;
+        const categoryDesc = String(row.CATEGORYDESC || "");
+        const isEtf =
+          /ETF/i.test(name) ||
+          /ETF/i.test(fundType || "") ||
+          categoryDesc.includes("ETF");
+        const sectorTags = inferSectorTags(name, themes);
+        out.push({
+          code,
+          name,
+          fundType,
+          company: String(bi.JJGS || "").trim() || undefined,
+          nav: num(bi.DWJZ) || undefined,
+          navDate: String(bi.FSRQ || "").trim() || undefined,
+          themes,
+          sectorTags,
+          category: isEtf ? "etf" : "fund",
+        });
+        seen.add(code);
+      }
+    }
+  } catch {
+    // ignore suggest failure, fall through to ETF list
+  }
+
+  // 2) 场内 ETF 列表兜底（代码/名称）
+  try {
+    const etfs = await searchEtfs(kw);
+    for (const e of etfs) {
+      if (seen.has(e.code)) continue;
+      const sectorTags = inferSectorTags(e.name);
+      out.push({
+        code: e.code,
+        name: e.name,
+        fundType: "ETF",
+        nav: e.price,
+        estimateNav: e.price,
+        estimateChangePercent: e.changePercent,
+        sectorTags,
+        themes: sectorTags,
+        category: "etf",
+      });
+      seen.add(e.code);
+    }
+  } catch {
+    // ignore
+  }
+
+  // 3) 若关键词是 6 位代码且尚未命中，尝试估值接口补名称
+  if (/^\d{6}$/.test(kw) && !seen.has(kw)) {
+    const est = await fetchFundEstimate(kw);
+    if (est?.name) {
+      const sectorTags = inferSectorTags(est.name);
+      out.unshift({
+        code: est.code,
+        name: est.name,
+        nav: est.nav,
+        navDate: est.navDate,
+        estimateNav: est.estimateNav,
+        estimateChangePercent: est.estimateChangePercent,
+        sectorTags,
+        themes: sectorTags,
+        category: "fund",
+      });
+    }
+  }
+
+  return out.slice(0, 20);
+}
+
+/** 批量：代码 → 基金名称/板块/估值（支付宝持仓补全） */
+export async function resolveFundsByCodes(
+  codes: string[]
+): Promise<Map<string, FundInfo>> {
+  const map = new Map<string, FundInfo>();
+  const pureCodes = Array.from(
+    new Set(
+      codes
+        .map((c) => c.replace(/^(sh|sz|of)/i, "").trim())
+        .filter((c) => /^\d{6}$/.test(c))
+    )
+  );
+  if (!pureCodes.length) return map;
+
+  await Promise.all(
+    pureCodes.map(async (code) => {
+      // 优先 suggest 拿名称+主题；估值接口拿盘中涨跌
+      let info: FundInfo | null = null;
+      try {
+        const found = await searchFunds(code);
+        info = found.find((f) => f.code === code) || found[0] || null;
+      } catch {
+        info = null;
+      }
+      const est = await fetchFundEstimate(code);
+      if (!info && est) {
+        const sectorTags = inferSectorTags(est.name);
+        info = {
+          code: est.code,
+          name: est.name,
+          nav: est.nav,
+          navDate: est.navDate,
+          estimateNav: est.estimateNav,
+          estimateChangePercent: est.estimateChangePercent,
+          sectorTags,
+          themes: sectorTags,
+          category: "fund",
+        };
+      } else if (info && est) {
+        info = {
+          ...info,
+          name: info.name || est.name,
+          nav: info.nav || est.nav,
+          navDate: info.navDate || est.navDate,
+          estimateNav: est.estimateNav ?? info.estimateNav,
+          estimateChangePercent:
+            est.estimateChangePercent ?? info.estimateChangePercent,
+          sectorTags:
+            info.sectorTags && info.sectorTags.length
+              ? info.sectorTags
+              : inferSectorTags(info.name || est.name, info.themes || []),
+        };
+      }
+      if (info) map.set(code, info);
+    })
+  );
+
+  return map;
+}
+
+/**
+ * 批量行情：场内走腾讯；场外基金用估值净值补成 StockQuote 形态
+ * 供持仓页统一展示「名称 + 涨跌」
+ */
+export async function fetchQuotesWithFunds(
+  codes: string[]
+): Promise<StockQuote[]> {
+  const pure = codes.map((c) => c.replace(/^(sh|sz|of)/i, "").trim());
+  const quotes = await fetchQuotesByCodes(pure);
+  const got = new Set(quotes.map((q) => q.code));
+  const missing = pure.filter((c) => c && !got.has(c));
+  if (!missing.length) return quotes;
+
+  const fundMap = await resolveFundsByCodes(missing);
+  for (const code of missing) {
+    const f = fundMap.get(code);
+    if (!f) continue;
+    const price = f.estimateNav || f.nav || 0;
+    if (price <= 0) continue;
+    const chg = f.estimateChangePercent ?? 0;
+    quotes.push({
+      code,
+      name: f.name,
+      price,
+      changePercent: chg,
+      changeAmount: 0,
+      volume: 0,
+      amount: 0,
+      turnover: 0,
+      pe: 0,
+      pb: 0,
+      high: price,
+      low: price,
+      open: price,
+      prevClose: f.nav || price,
+      totalMV: 0,
+      circMV: 0,
+      amplitude: 0,
+      volumeRatio: 0,
+      market: "SZ",
+    });
+  }
+  return quotes;
 }
