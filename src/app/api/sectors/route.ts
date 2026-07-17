@@ -1,13 +1,6 @@
 import { NextResponse } from "next/server";
-import {
-  fetchEtfList,
-  fetchSectors,
-  matchEtfsForSector,
-} from "@/lib/eastmoney";
-import { analyzeSector, matchEtfsForSector as matchEtfs } from "@/lib/analysis";
-
-// re-export fix: matchEtfs is in analysis, fetch in eastmoney
-import { matchEtfsForSector as matchEtfsLocal } from "@/lib/analysis";
+import { fetchEtfList, fetchSectors } from "@/lib/eastmoney";
+import { analyzeSector, matchEtfsForSector } from "@/lib/analysis";
 
 export const runtime = "nodejs";
 export const revalidate = 30;
@@ -19,25 +12,36 @@ export async function GET(req: Request) {
       | "industry"
       | "concept"
       | "all";
-    const limit = Math.min(80, Math.max(10, Number(searchParams.get("limit") || 40)));
+    const limit = Math.min(
+      80,
+      Math.max(10, Number(searchParams.get("limit") || 40))
+    );
     const focus = (searchParams.get("focus") || "")
       .split(/[,，\s]+/)
       .map((s) => s.trim())
       .filter(Boolean);
-    // 默认关注：半导体/通信/电子相关
     const focusKeys =
       focus.length > 0
         ? focus
-        : ["半导", "芯片", "通信", "光模块", "电子", "消费电子", "电力设备", "专用设备"];
+        : [
+            "半导",
+            "芯片",
+            "通信",
+            "光模块",
+            "电子",
+            "消费电子",
+            "电力设备",
+            "专用设备",
+          ];
 
     const [sectors, etfs] = await Promise.all([
       fetchSectors(type, limit),
       fetchEtfList({ sort: "amount", limit: 120 }).catch(() => []),
     ]);
 
-    const gainers = [...sectors]
-      .filter((s) => s.type === "industry" || type !== "industry")
-      .sort((a, b) => b.changePercent - a.changePercent);
+    const gainers = [...sectors].sort(
+      (a, b) => b.changePercent - a.changePercent
+    );
     const losers = [...sectors].sort(
       (a, b) => a.changePercent - b.changePercent
     );
@@ -46,7 +50,6 @@ export async function GET(req: Request) {
       focusKeys.some((k) => s.name.includes(k))
     );
 
-    // 确保焦点板进入分析列表
     const analysisTargets = [
       ...focusBoards,
       ...gainers.slice(0, 8),
@@ -60,7 +63,7 @@ export async function GET(req: Request) {
     });
 
     const analyses = uniq.slice(0, 20).map((b) => {
-      const related = matchEtfsLocal(b.name, etfs, 5);
+      const related = matchEtfsForSector(b.name, etfs, 5);
       const isFocus = focusKeys.some((k) => b.name.includes(k));
       return analyzeSector(b, related, isFocus);
     });
