@@ -3,14 +3,16 @@ import {
   fetchEtfList,
   fetchFundNavHistory,
   fetchKline,
-  fetchQuotesByCodes,
+  fetchQuotesWithFunds,
   fetchSectors,
+  resolveFundsByCodes,
 } from "@/lib/eastmoney";
 import {
   DEFAULT_WATCH_HOLDINGS,
   buildHoldingAdvices,
   deriveHoldingMetrics,
   fillHoldingWeights,
+  inferSectorTags,
 } from "@/lib/analysis";
 import type { HoldingItem } from "@/lib/types";
 
@@ -22,9 +24,9 @@ function normalizeHoldings(raw: HoldingItem[]): HoldingItem[] {
     .map((h) => ({
       ...h,
       code: String(h.code || "")
-        .replace(/^(sh|sz)/i, "")
+        .replace(/^(sh|sz|of)/i, "")
         .trim(),
-      type: h.type || ("etf" as const),
+      type: h.type || ("fund" as const),
       amount:
         h.amount !== undefined && Number.isFinite(Number(h.amount))
           ? Number(h.amount)
@@ -41,8 +43,36 @@ function normalizeHoldings(raw: HoldingItem[]): HoldingItem[] {
         h.cost !== undefined && Number.isFinite(Number(h.cost))
           ? Number(h.cost)
           : undefined,
+      sectorTags: Array.isArray(h.sectorTags)
+        ? h.sectorTags.map(String).filter(Boolean)
+        : undefined,
+      fundType: h.fundType,
     }))
     .filter((h) => h.code);
+}
+
+async function enrichHoldings(holdings: HoldingItem[]): Promise<HoldingItem[]> {
+  const codes = holdings.map((h) => h.code);
+  const fundMap = await resolveFundsByCodes(codes);
+  return holdings.map((h) => {
+    const f = fundMap.get(h.code);
+    const name = f?.name || h.name || h.code;
+    const sectorTags =
+      h.sectorTags && h.sectorTags.length
+        ? h.sectorTags
+        : f?.sectorTags && f.sectorTags.length
+          ? f.sectorTags
+          : inferSectorTags(name, f?.themes || []);
+    const looksEtf =
+      f?.category === "etf" || /ETF/i.test(name) || h.type === "etf";
+    return {
+      ...h,
+      name,
+      type: looksEtf ? "etf" : h.type === "stock" ? "stock" : "fund",
+      fundType: h.fundType || f?.fundType || (looksEtf ? "ETF" : undefined),
+      sectorTags,
+    };
+  });
 }
 
 function buildPortfolioSummary(
@@ -95,8 +125,7 @@ function buildPortfolioSummary(
     portfolio: {
       totalAmount: hasAmount ? totalAmount : undefined,
       totalProfit: hasProfit ? totalProfit : undefined,
-      totalCostAmount:
-        hasAmount && hasProfit ? totalCostAmount : undefined,
+      totalCostAmount: hasAmount && hasProfit ? totalCostAmount : undefined,
       totalWeight: hasAmount
         ? 100
         : weighted.reduce((s, h) => s + (h.weight || 0), 0),
@@ -115,7 +144,7 @@ export async function GET(req: Request) {
       Math.max(10, Number(searchParams.get("days") || 60))
     );
 
-    // codes=512480:半导体ETF:30000:1200,510300:沪深300:25000:-300
+    // codes=110022:易方达消费:30000:1200,512480:半导体ETF:25000:-300
     // 格式 code:name:amount:profit
     let holdings: HoldingItem[] = [];
     if (codesParam.trim()) {
@@ -125,7 +154,7 @@ export async function GET(req: Request) {
           return {
             code: code || "",
             name: name || code || "",
-            type: "etf" as const,
+            type: "fund" as const,
             amount: amount ? Number(amount) : undefined,
             profit: profit ? Number(profit) : undefined,
           };
@@ -135,9 +164,10 @@ export async function GET(req: Request) {
       holdings = DEFAULT_WATCH_HOLDINGS;
     }
 
+    holdings = await enrichHoldings(holdings);
     const codes = holdings.map((h) => h.code);
     const [quotes, sectors, etfList] = await Promise.all([
-      fetchQuotesByCodes(codes),
+      fetchQuotesWithFunds(codes),
       fetchSectors("industry", 50).catch(() => []),
       fetchEtfList({ sort: "amount", limit: 80 }).catch(() => []),
     ]);
@@ -157,8 +187,8 @@ export async function GET(req: Request) {
 
     const seriesEntries = await Promise.all(
       codes.map(async (code) => {
-        const series = await fetchKline(code, days).catch(async () => {
-          return fetchFundNavHistory(code, days).catch(() => []);
+        const series = await fetchFundNavHistory(code, days).catch(async () => {
+          return fetchKline(code, days).catch(() => []);
         });
         return [code, series] as const;
       })
@@ -190,12 +220,13 @@ export async function POST(req: Request) {
     const body = await req.json().catch(() => ({}));
     const raw = (body.holdings || []) as HoldingItem[];
     const days = Math.min(120, Math.max(10, Number(body.days || 60)));
-    const list =
+    let list =
       raw.length > 0 ? normalizeHoldings(raw) : DEFAULT_WATCH_HOLDINGS;
 
+    list = await enrichHoldings(list);
     const codes = list.map((h) => h.code);
     const [quotes, sectors] = await Promise.all([
-      fetchQuotesByCodes(codes),
+      fetchQuotesWithFunds(codes),
       fetchSectors("industry", 50).catch(() => []),
     ]);
     const quoteMap = new Map(quotes.map((q) => [q.code, q]));
@@ -211,8 +242,8 @@ export async function POST(req: Request) {
     const advices = buildHoldingAdvices(filled, quoteMap, sectorMap);
     const seriesEntries = await Promise.all(
       codes.map(async (code) => {
-        const series = await fetchKline(code, days).catch(async () =>
-          fetchFundNavHistory(code, days).catch(() => [])
+        const series = await fetchFundNavHistory(code, days).catch(async () =>
+          fetchKline(code, days).catch(() => [])
         );
         return [code, series] as const;
       })
