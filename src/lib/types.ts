@@ -105,6 +105,30 @@ export interface NavPoint {
   accNav?: number; // 累计净值
 }
 
+/** 支付宝/场外基金 + 场内 ETF 统一检索结果 */
+export interface FundInfo {
+  code: string;
+  name: string;
+  /** 产品类型：股票型 / 混合型 / 指数型 / ETF 等 */
+  fundType?: string;
+  /** 基金公司 */
+  company?: string;
+  /** 最新单位净值 */
+  nav?: number;
+  /** 净值日期 */
+  navDate?: string;
+  /** 盘中估值净值 */
+  estimateNav?: number;
+  /** 估值涨跌幅 % */
+  estimateChangePercent?: number;
+  /** 东财主题/板块（如 消费、白酒、半导体） */
+  themes?: string[];
+  /** 归一化板块标签（用于展示与建议） */
+  sectorTags?: string[];
+  /** 来源类别 */
+  category?: "fund" | "etf" | "other";
+}
+
 /** 持仓条目（前端 localStorage + API 建议） */
 export interface HoldingItem {
   code: string;
@@ -119,6 +143,8 @@ export interface HoldingItem {
   weight?: number; // 仓位占比 %（可由金额自动计算）
   note?: string;
   sectorTags?: string[]; // 关联板块标签
+  /** 基金类型文案（股票型/混合型/ETF 等） */
+  fundType?: string;
 }
 
 export type AdviceAction = "加仓" | "减仓" | "持有" | "观望" | "分批建仓" | "止盈" | "止损观察";
@@ -142,6 +168,10 @@ export interface HoldingAdvice {
   costAmount?: number;
   /** 仓位占比 %（按金额加权） */
   weight?: number;
+  /** 板块标签 */
+  sectorTags?: string[];
+  /** 基金类型 */
+  fundType?: string;
 }
 
 /** 板块三维分析 */

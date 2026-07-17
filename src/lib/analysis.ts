@@ -19,7 +19,7 @@ const THEME_RULES: Array<{
 }> = [
   {
     tags: ["半导体", "芯片", "科创"],
-    keywords: ["半导", "芯片", "集成电路", "科创", "存储", "光刻", "设备"],
+    keywords: ["半导", "芯片", "集成电路", "科创", "存储", "光刻", "设备", "人工智能", "AI"],
     etfs: ["芯片ETF", "半导体ETF", "科创50", "科创芯片"],
     policy: [
       "集成电路关键攻关与国产替代仍是十五五主线",
@@ -31,7 +31,7 @@ const THEME_RULES: Array<{
   },
   {
     tags: ["CPO", "光模块", "通信"],
-    keywords: ["CPO", "光模块", "光通信", "通信设备", "5G", "算力互联"],
+    keywords: ["CPO", "光模块", "光通信", "通信设备", "5G", "算力互联", "通信"],
     etfs: ["通信ETF", "5G ETF", "TMT相关"],
     policy: ["东数西算与算力基建", "数字经济基础设施", "国产算力生态"],
     newsBull: ["800G/1.6T 升级", "云厂商资本开支", "CPO/NPO 渗透"],
@@ -39,15 +39,23 @@ const THEME_RULES: Array<{
   },
   {
     tags: ["PCB", "电子", "硬件"],
-    keywords: ["PCB", "覆铜板", "电子", "硬件", "服务器"],
+    keywords: ["PCB", "覆铜板", "电子", "硬件", "服务器", "计算机"],
     etfs: ["电子ETF", "信息技术ETF"],
     policy: ["先进制造", "算力硬件自主可控间接受益"],
     newsBull: ["AI 服务器高多层 PCB", "材料提价"],
     newsBear: ["产业链降本", "高位回调", "外盘映射"],
   },
   {
+    tags: ["消费", "白酒", "食品饮料"],
+    keywords: ["消费", "白酒", "食品", "饮料", "家电", "零售", "免税", "乳业"],
+    etfs: ["消费ETF", "白酒ETF", "食品饮料"],
+    policy: ["扩大内需与促消费", "提振居民消费信心"],
+    newsBull: ["节日催化", "龙头提价/动销修复"],
+    newsBear: ["需求复苏节奏", "估值波动"],
+  },
+  {
     tags: ["宽基", "指数"],
-    keywords: ["沪深300", "中证500", "中证A500", "上证50", "创业板", "红利"],
+    keywords: ["沪深300", "中证500", "中证A500", "上证50", "创业板", "红利", "中证1000", "全指"],
     etfs: ["沪深300ETF", "中证A500ETF", "创业板ETF", "红利ETF"],
     policy: ["中长期资金入市", "稳信心与慢牛托底"],
     newsBull: ["机构再平衡", "政策托底流动性"],
@@ -55,7 +63,7 @@ const THEME_RULES: Array<{
   },
   {
     tags: ["红利", "高股息", "银行", "电力"],
-    keywords: ["红利", "高股息", "银行", "电力", "煤运", "公用"],
+    keywords: ["红利", "高股息", "银行", "电力", "煤运", "公用", "保险", "证券"],
     etfs: ["红利ETF", "银行ETF", "红利低波"],
     policy: ["中特估与股东回报", "高股息配置价值"],
     newsBull: ["科技抽水时资金回流", "股息确定性"],
@@ -63,7 +71,7 @@ const THEME_RULES: Array<{
   },
   {
     tags: ["新能源", "电力", "绿电"],
-    keywords: ["新能源", "光伏", "锂电", "绿电", "电力", "风电"],
+    keywords: ["新能源", "光伏", "锂电", "绿电", "电力", "风电", "储能", "新能源汽车", "新能源车"],
     etfs: ["新能源车ETF", "光伏ETF", "电力ETF"],
     policy: ["双碳与能源结构转型", "反内卷或改善龙头利润"],
     newsBull: ["装机与电网投资", "电力供需"],
@@ -71,13 +79,50 @@ const THEME_RULES: Array<{
   },
   {
     tags: ["医药", "创新药"],
-    keywords: ["医药", "创新药", "生物", "CXO", "中药"],
+    keywords: ["医药", "创新药", "生物", "CXO", "中药", "医疗", "器械"],
     etfs: ["医药ETF", "创新药ETF"],
     policy: ["集采常态化", "创新药审评与支付支持"],
     newsBull: ["管线催化", "海外授权"],
     newsBear: ["估值波动", "政策扰动"],
   },
+  {
+    tags: ["军工", "国防"],
+    keywords: ["军工", "国防", "航空", "航天", "兵器"],
+    etfs: ["军工ETF", "国防军工"],
+    policy: ["国防现代化与自主可控"],
+    newsBull: ["订单与装备升级"],
+    newsBear: ["主题波动大", "业绩节奏不确定"],
+  },
+  {
+    tags: ["港股", "QDII", "海外"],
+    keywords: ["港股", "QDII", "纳斯达克", "标普", "海外", "美股", "恒生"],
+    etfs: ["港股通", "纳指ETF", "QDII"],
+    policy: ["跨境资产配置需求"],
+    newsBull: ["汇率与外围风险偏好"],
+    newsBear: ["汇率波动", "外围政策与估值"],
+  },
 ];
+
+/** 由基金名称 / 东财主题推断板块标签（支付宝基金添加时用） */
+export function inferSectorTags(
+  name: string,
+  extra: string[] = [],
+  max = 4
+): string[] {
+  const themes = matchThemes(name, extra);
+  const tags: string[] = [];
+  for (const t of themes) {
+    for (const tag of t.tags) {
+      if (!tags.includes(tag)) tags.push(tag);
+    }
+  }
+  // 东财主题原文也并入（消费、白酒等）
+  for (const e of extra) {
+    const clean = String(e || "").trim();
+    if (clean && !tags.includes(clean)) tags.push(clean);
+  }
+  return tags.slice(0, max);
+}
 
 function clamp(n: number, min = 0, max = 100) {
   return Math.max(min, Math.min(max, n));
@@ -280,12 +325,16 @@ export function buildHoldingAdvices(
     const pnlPct = metrics.pnlPct;
     const weight = h.weight;
 
-    const themes = matchThemes(name, h.sectorTags || []);
+    const sectorTags =
+      h.sectorTags && h.sectorTags.length
+        ? h.sectorTags
+        : inferSectorTags(name);
+    const themes = matchThemes(name, sectorTags);
     // 关联板块涨跌辅助
     let sectorChg = chg;
-    if (h.sectorTags?.length) {
+    if (sectorTags.length) {
       for (const [, b] of sectorMap) {
-        if (h.sectorTags.some((t) => b.name.includes(t))) {
+        if (sectorTags.some((t) => b.name.includes(t))) {
           sectorChg = b.changePercent;
           break;
         }
@@ -296,12 +345,16 @@ export function buildHoldingAdvices(
     let action = base.action;
     const reasons: string[] = [];
 
+    if (sectorTags.length) {
+      reasons.push(`所属板块：${sectorTags.join(" / ")}`);
+    }
+
     if (q) {
       reasons.push(
-        `现价 ${price?.toFixed(3)}，今日 ${chg >= 0 ? "+" : ""}${chg.toFixed(2)}%`
+        `现价/净值 ${price?.toFixed(3)}，今日 ${chg >= 0 ? "+" : ""}${chg.toFixed(2)}%`
       );
     } else {
-      reasons.push("暂未取到实时行情，建议稍后刷新");
+      reasons.push("暂未取到实时行情/估值，建议稍后刷新");
     }
     if (metrics.amount !== undefined) {
       reasons.push(
@@ -367,7 +420,7 @@ export function buildHoldingAdvices(
       action,
       confidence: clamp(base.confidence + (q ? 5 : -10)),
       horizon: base.horizon,
-      reasons: reasons.slice(0, 5),
+      reasons: reasons.slice(0, 6),
       risk,
       price,
       changePercent: chg,
@@ -376,6 +429,8 @@ export function buildHoldingAdvices(
       profit: metrics.profit,
       costAmount: metrics.costAmount,
       weight,
+      sectorTags,
+      fundType: h.fundType,
     };
   });
 }
