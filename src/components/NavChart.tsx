@@ -79,12 +79,13 @@ export function NavChart({
               fontSize: 12,
             }}
             labelStyle={{ color: "#93a4c3" }}
-            formatter={(value: number | string) => [
-              Number(value).toFixed(4),
+            formatter={(value) => [
+              Number(value ?? 0).toFixed(4),
               "净值/收盘",
             ]}
             labelFormatter={(_, payload) =>
-              payload?.[0]?.payload?.fullDate || ""
+              (payload?.[0]?.payload as { fullDate?: string } | undefined)
+                ?.fullDate || ""
             }
           />
           <Area
