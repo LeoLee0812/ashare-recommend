@@ -9,32 +9,128 @@ import {
 import {
   DEFAULT_WATCH_HOLDINGS,
   buildHoldingAdvices,
+  deriveHoldingMetrics,
+  fillHoldingWeights,
 } from "@/lib/analysis";
 import type { HoldingItem } from "@/lib/types";
 
 export const runtime = "nodejs";
 export const revalidate = 20;
 
+function normalizeHoldings(raw: HoldingItem[]): HoldingItem[] {
+  return raw
+    .map((h) => ({
+      ...h,
+      code: String(h.code || "")
+        .replace(/^(sh|sz)/i, "")
+        .trim(),
+      type: h.type || ("etf" as const),
+      amount:
+        h.amount !== undefined && Number.isFinite(Number(h.amount))
+          ? Number(h.amount)
+          : undefined,
+      profit:
+        h.profit !== undefined && Number.isFinite(Number(h.profit))
+          ? Number(h.profit)
+          : undefined,
+      weight:
+        h.weight !== undefined && Number.isFinite(Number(h.weight))
+          ? Number(h.weight)
+          : undefined,
+      cost:
+        h.cost !== undefined && Number.isFinite(Number(h.cost))
+          ? Number(h.cost)
+          : undefined,
+    }))
+    .filter((h) => h.code);
+}
+
+function buildPortfolioSummary(
+  holdings: HoldingItem[],
+  quoteMap: Map<string, { changePercent?: number; price?: number }>
+) {
+  const weighted = fillHoldingWeights(holdings);
+
+  let totalAmount = 0;
+  let totalProfit = 0;
+  let totalCostAmount = 0;
+  let totalWeight = 0;
+  let weightedChg = 0;
+  let hasAmount = false;
+  let hasProfit = false;
+
+  for (const h of weighted) {
+    const q = quoteMap.get(h.code);
+    const chg = q?.changePercent || 0;
+    const metrics = deriveHoldingMetrics(h, q?.price);
+
+    if (metrics.amount !== undefined) {
+      hasAmount = true;
+      totalAmount += metrics.amount;
+    }
+    if (metrics.profit !== undefined) {
+      hasProfit = true;
+      totalProfit += metrics.profit;
+    }
+    if (metrics.costAmount !== undefined) {
+      totalCostAmount += metrics.costAmount;
+    }
+
+    const w =
+      metrics.amount !== undefined && metrics.amount > 0
+        ? metrics.amount
+        : h.weight || 0;
+    totalWeight += w;
+    weightedChg += w * chg;
+  }
+
+  const portfolioChg = totalWeight > 0 ? weightedChg / totalWeight : undefined;
+  const portfolioPnlPct =
+    hasAmount && hasProfit && totalCostAmount > 0
+      ? (totalProfit / totalCostAmount) * 100
+      : undefined;
+
+  return {
+    holdings: weighted,
+    portfolio: {
+      totalAmount: hasAmount ? totalAmount : undefined,
+      totalProfit: hasProfit ? totalProfit : undefined,
+      totalCostAmount:
+        hasAmount && hasProfit ? totalCostAmount : undefined,
+      totalWeight: hasAmount
+        ? 100
+        : weighted.reduce((s, h) => s + (h.weight || 0), 0),
+      weightedChangePercent: portfolioChg,
+      portfolioPnlPct,
+    },
+  };
+}
+
 export async function GET(req: Request) {
   try {
     const { searchParams } = new URL(req.url);
     const codesParam = searchParams.get("codes") || "";
-    const days = Math.min(120, Math.max(10, Number(searchParams.get("days") || 60)));
+    const days = Math.min(
+      120,
+      Math.max(10, Number(searchParams.get("days") || 60))
+    );
 
-    // codes=512480:半导体ETF:30:1.2,510300:沪深300:25
-    // 格式 code:name:weight:cost
+    // codes=512480:半导体ETF:30000:1200,510300:沪深300:25000:-300
+    // 格式 code:name:amount:profit
     let holdings: HoldingItem[] = [];
     if (codesParam.trim()) {
-      holdings = codesParam.split(",").map((part) => {
-        const [code, name, weight, cost] = part.split(":");
-        return {
-          code: (code || "").replace(/^(sh|sz)/i, "").trim(),
-          name: name || code || "",
-          type: "etf" as const,
-          weight: weight ? Number(weight) : undefined,
-          cost: cost ? Number(cost) : undefined,
-        };
-      }).filter((h) => h.code);
+      holdings = normalizeHoldings(
+        codesParam.split(",").map((part) => {
+          const [code, name, amount, profit] = part.split(":");
+          return {
+            code: code || "",
+            name: name || code || "",
+            type: "etf" as const,
+            amount: amount ? Number(amount) : undefined,
+            profit: profit ? Number(profit) : undefined,
+          };
+        })
+      );
     } else {
       holdings = DEFAULT_WATCH_HOLDINGS;
     }
@@ -47,16 +143,18 @@ export async function GET(req: Request) {
     ]);
 
     const quoteMap = new Map(quotes.map((q) => [q.code, q]));
-    // 补名称
     holdings = holdings.map((h) => ({
       ...h,
       name: quoteMap.get(h.code)?.name || h.name,
     }));
 
     const sectorMap = new Map(sectors.map((s) => [s.code, s]));
-    const advices = buildHoldingAdvices(holdings, quoteMap, sectorMap);
+    const { holdings: filled, portfolio } = buildPortfolioSummary(
+      holdings,
+      quoteMap
+    );
+    const advices = buildHoldingAdvices(filled, quoteMap, sectorMap);
 
-    // 每只持仓拉走势
     const seriesEntries = await Promise.all(
       codes.map(async (code) => {
         const series = await fetchKline(code, days).catch(async () => {
@@ -67,30 +165,15 @@ export async function GET(req: Request) {
     );
     const seriesMap = Object.fromEntries(seriesEntries);
 
-    // 组合简易汇总
-    let totalWeight = 0;
-    let weightedChg = 0;
-    for (const h of holdings) {
-      const w = h.weight || 0;
-      const chg = quoteMap.get(h.code)?.changePercent || 0;
-      totalWeight += w;
-      weightedChg += w * chg;
-    }
-    const portfolioChg =
-      totalWeight > 0 ? weightedChg / totalWeight : undefined;
-
     return NextResponse.json({
       ok: true,
-      holdings,
+      holdings: filled,
       quotes,
       advices,
       seriesMap,
       sectors: sectors.slice(0, 30),
       etfSuggestions: etfList.slice(0, 20),
-      portfolio: {
-        totalWeight,
-        weightedChangePercent: portfolioChg,
-      },
+      portfolio,
       updatedAt: new Date().toISOString(),
       disclaimer:
         "持仓建议为规则推演，仅供学习研究，不构成投资建议。股市有风险，入市需谨慎。",
@@ -105,16 +188,10 @@ export async function POST(req: Request) {
   // 与 GET 相同，body 传 holdings JSON，避免 URL 过长
   try {
     const body = await req.json().catch(() => ({}));
-    const holdings = (body.holdings || []) as HoldingItem[];
+    const raw = (body.holdings || []) as HoldingItem[];
     const days = Math.min(120, Math.max(10, Number(body.days || 60)));
     const list =
-      holdings.length > 0
-        ? holdings.map((h) => ({
-            ...h,
-            code: String(h.code || "").replace(/^(sh|sz)/i, ""),
-            type: h.type || "etf",
-          }))
-        : DEFAULT_WATCH_HOLDINGS;
+      raw.length > 0 ? normalizeHoldings(raw) : DEFAULT_WATCH_HOLDINGS;
 
     const codes = list.map((h) => h.code);
     const [quotes, sectors] = await Promise.all([
@@ -123,10 +200,14 @@ export async function POST(req: Request) {
     ]);
     const quoteMap = new Map(quotes.map((q) => [q.code, q]));
     const sectorMap = new Map(sectors.map((s) => [s.code, s]));
-    const filled = list.map((h) => ({
+    const named = list.map((h) => ({
       ...h,
       name: quoteMap.get(h.code)?.name || h.name,
     }));
+    const { holdings: filled, portfolio } = buildPortfolioSummary(
+      named,
+      quoteMap
+    );
     const advices = buildHoldingAdvices(filled, quoteMap, sectorMap);
     const seriesEntries = await Promise.all(
       codes.map(async (code) => {
@@ -143,9 +224,9 @@ export async function POST(req: Request) {
       quotes,
       advices,
       seriesMap: Object.fromEntries(seriesEntries),
+      portfolio,
       updatedAt: new Date().toISOString(),
-      disclaimer:
-        "持仓建议为规则推演，仅供学习研究，不构成投资建议。",
+      disclaimer: "持仓建议为规则推演，仅供学习研究，不构成投资建议。",
     });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
