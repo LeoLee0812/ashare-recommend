@@ -209,21 +209,76 @@ export function analyzeSector(
   };
 }
 
+/** 从持仓金额/收益推导成本与盈亏% */
+export function deriveHoldingMetrics(h: HoldingItem, price?: number) {
+  const amount =
+    h.amount !== undefined && Number.isFinite(h.amount) ? Number(h.amount) : undefined;
+  const profit =
+    h.profit !== undefined && Number.isFinite(h.profit) ? Number(h.profit) : undefined;
+
+  let costAmount: number | undefined;
+  let pnlPct: number | undefined;
+  let cost: number | undefined = h.cost;
+
+  if (amount !== undefined && profit !== undefined) {
+    costAmount = amount - profit;
+    if (costAmount > 0) {
+      pnlPct = (profit / costAmount) * 100;
+    } else if (costAmount === 0 && profit !== 0) {
+      pnlPct = profit > 0 ? 100 : -100;
+    }
+  } else if (price && h.cost && h.cost > 0) {
+    // 兼容旧数据：仅有成本净值
+    pnlPct = ((price - h.cost) / h.cost) * 100;
+    cost = h.cost;
+  }
+
+  // 有现价时，可由金额/收益反推单位成本净值
+  if (price && price > 0 && amount !== undefined && amount > 0 && profit !== undefined) {
+    const shares = amount / price;
+    if (shares > 0) {
+      cost = (amount - profit) / shares;
+    }
+  }
+
+  return { amount, profit, costAmount, pnlPct, cost };
+}
+
+/** 按持仓金额自动计算仓位占比%（无金额则保留原 weight） */
+export function fillHoldingWeights(holdings: HoldingItem[]): HoldingItem[] {
+  const totalAmount = holdings.reduce((sum, h) => {
+    const a = h.amount;
+    return sum + (a !== undefined && Number.isFinite(a) && a > 0 ? a : 0);
+  }, 0);
+
+  if (totalAmount <= 0) return holdings;
+
+  return holdings.map((h) => {
+    const a = h.amount;
+    if (a === undefined || !Number.isFinite(a) || a <= 0) return h;
+    return {
+      ...h,
+      weight: Math.round((a / totalAmount) * 1000) / 10, // 1 位小数
+    };
+  });
+}
+
 /** 持仓操作建议 */
 export function buildHoldingAdvices(
   holdings: HoldingItem[],
   quotes: Map<string, StockQuote | EtfQuote>,
   sectorMap: Map<string, SectorBoard>
 ): HoldingAdvice[] {
-  return holdings.map((h) => {
+  const weighted = fillHoldingWeights(holdings);
+
+  return weighted.map((h) => {
     const q = quotes.get(h.code);
     const price = q?.price;
     const chg = q?.changePercent ?? 0;
     const name = q?.name || h.name;
-    let pnlPct: number | undefined;
-    if (price && h.cost && h.cost > 0) {
-      pnlPct = ((price - h.cost) / h.cost) * 100;
-    }
+    const metrics = deriveHoldingMetrics(h, price);
+    const pnlPct = metrics.pnlPct;
+    const weight = h.weight;
 
     const themes = matchThemes(name, h.sectorTags || []);
     // 关联板块涨跌辅助
@@ -247,6 +302,14 @@ export function buildHoldingAdvices(
       );
     } else {
       reasons.push("暂未取到实时行情，建议稍后刷新");
+    }
+    if (metrics.amount !== undefined) {
+      reasons.push(
+        `持仓金额 ${fmtMoney(metrics.amount)}` +
+          (metrics.profit !== undefined
+            ? `，持有收益 ${fmtMoneySigned(metrics.profit)}`
+            : "")
+      );
     }
     if (pnlPct !== undefined) {
       reasons.push(`相对成本盈亏约 ${pnlPct >= 0 ? "+" : ""}${pnlPct.toFixed(2)}%`);
@@ -279,12 +342,12 @@ export function buildHoldingAdvices(
       reasons.push("宽基/红利波动相对可控，适合作底仓或缓冲仓");
     }
 
-    // 仓位权重提示
-    if ((h.weight || 0) >= 40 && (chg <= -2 || (pnlPct || 0) < -8)) {
+    // 仓位权重提示（金额推导或手填）
+    if ((weight || 0) >= 40 && (chg <= -2 || (pnlPct || 0) < -8)) {
       reasons.push("单基仓位偏重，回撤时优先考虑降集中度");
       if (action === "分批建仓") action = "观望";
     }
-    if ((h.weight || 0) >= 30 && chg >= 3 && (pnlPct || 0) > 20) {
+    if ((weight || 0) >= 30 && chg >= 3 && (pnlPct || 0) > 20) {
       action = "止盈";
       reasons.push("高仓位+高浮盈，建议部分止盈锁定收益");
     }
@@ -309,8 +372,22 @@ export function buildHoldingAdvices(
       price,
       changePercent: chg,
       pnlPct,
+      amount: metrics.amount,
+      profit: metrics.profit,
+      costAmount: metrics.costAmount,
+      weight,
     };
   });
+}
+
+function fmtMoney(n: number) {
+  if (Math.abs(n) >= 10000) return `${(n / 10000).toFixed(2)}万`;
+  return `${n.toFixed(2)}元`;
+}
+
+function fmtMoneySigned(n: number) {
+  const sign = n > 0 ? "+" : "";
+  return `${sign}${fmtMoney(n)}`;
 }
 
 /** 从 ETF 列表里给板块匹配相关 ETF */
@@ -341,12 +418,14 @@ export function matchEtfsForSector(
   return scored.slice(0, limit).map((x) => x.e);
 }
 
-/** 默认观察持仓（赵德涛近期焦点，可被用户覆盖） */
+/** 默认观察持仓（赵德涛近期焦点，可被用户覆盖；示例金额仅作演示） */
 export const DEFAULT_WATCH_HOLDINGS: HoldingItem[] = [
   {
     code: "512480",
     name: "半导体ETF",
     type: "etf",
+    amount: 30000,
+    profit: 0,
     weight: 30,
     sectorTags: ["半导体", "芯片"],
   },
@@ -354,6 +433,8 @@ export const DEFAULT_WATCH_HOLDINGS: HoldingItem[] = [
     code: "588000",
     name: "科创50ETF",
     type: "etf",
+    amount: 20000,
+    profit: 0,
     weight: 20,
     sectorTags: ["科创", "半导体"],
   },
@@ -361,6 +442,8 @@ export const DEFAULT_WATCH_HOLDINGS: HoldingItem[] = [
     code: "515050",
     name: "5G通信ETF",
     type: "etf",
+    amount: 15000,
+    profit: 0,
     weight: 15,
     sectorTags: ["通信", "CPO"],
   },
@@ -368,6 +451,8 @@ export const DEFAULT_WATCH_HOLDINGS: HoldingItem[] = [
     code: "510300",
     name: "沪深300ETF",
     type: "etf",
+    amount: 25000,
+    profit: 0,
     weight: 25,
     sectorTags: ["宽基", "指数"],
   },
@@ -375,6 +460,8 @@ export const DEFAULT_WATCH_HOLDINGS: HoldingItem[] = [
     code: "510880",
     name: "红利ETF",
     type: "etf",
+    amount: 10000,
+    profit: 0,
     weight: 10,
     sectorTags: ["红利", "高股息"],
   },
