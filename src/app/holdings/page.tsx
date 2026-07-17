@@ -12,7 +12,8 @@ import {
   pctClass,
 } from "@/components/ui";
 
-const STORAGE_KEY = "ashare_holdings_v1";
+const STORAGE_KEY = "ashare_holdings_v2";
+const LEGACY_STORAGE_KEY = "ashare_holdings_v1";
 
 type LocalHolding = HoldingItem & { id: string };
 
@@ -20,18 +21,42 @@ function uid() {
   return `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
+function parseNum(v: unknown): number | undefined {
+  if (v === undefined || v === null || v === "") return undefined;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : undefined;
+}
+
+function migrateLegacy(h: HoldingItem): LocalHolding {
+  // 旧版：weight + cost(净值) → 新版优先 amount/profit；无金额则保留旧字段兼容
+  return {
+    id: (h as LocalHolding).id || uid(),
+    code: String(h.code || "").replace(/^(sh|sz)/i, ""),
+    name: h.name || String(h.code || ""),
+    type: h.type || "etf",
+    amount: parseNum((h as HoldingItem).amount),
+    profit: parseNum((h as HoldingItem).profit),
+    weight: parseNum(h.weight),
+    cost: parseNum(h.cost),
+    shares: parseNum(h.shares),
+    note: h.note,
+    sectorTags: h.sectorTags,
+  };
+}
+
 function loadLocal(): LocalHolding[] {
   if (typeof window === "undefined") return [];
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw =
+      localStorage.getItem(STORAGE_KEY) ||
+      localStorage.getItem(LEGACY_STORAGE_KEY);
     if (!raw) return [];
     const arr = JSON.parse(raw);
     if (!Array.isArray(arr)) return [];
-    return arr.map((h: HoldingItem) => ({
-      ...h,
-      id: (h as LocalHolding).id || uid(),
-      code: String(h.code || "").replace(/^(sh|sz)/i, ""),
-    }));
+    const list = arr.map((h: HoldingItem) => migrateLegacy(h));
+    // 迁移到 v2
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(list));
+    return list;
   } catch {
     return [];
   }
@@ -39,6 +64,17 @@ function loadLocal(): LocalHolding[] {
 
 function saveLocal(list: LocalHolding[]) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(list));
+}
+
+function fmtMoney(n?: number, signed = false) {
+  if (n === undefined || !Number.isFinite(n)) return "-";
+  const abs = Math.abs(n);
+  const body =
+    abs >= 10000 ? `${(abs / 10000).toFixed(2)}万` : `${abs.toFixed(2)}元`;
+  if (!signed) return n < 0 ? `-${body}` : body;
+  if (n > 0) return `+${body}`;
+  if (n < 0) return `-${body}`;
+  return body;
 }
 
 export default function HoldingsPage() {
@@ -52,13 +88,16 @@ export default function HoldingsPage() {
   const [selectedCode, setSelectedCode] = useState<string>("");
   const [updatedAt, setUpdatedAt] = useState("");
   const [portfolioChg, setPortfolioChg] = useState<number | undefined>();
+  const [portfolioAmount, setPortfolioAmount] = useState<number | undefined>();
+  const [portfolioProfit, setPortfolioProfit] = useState<number | undefined>();
+  const [portfolioPnlPct, setPortfolioPnlPct] = useState<number | undefined>();
   const [disclaimer, setDisclaimer] = useState("");
 
-  // form
+  // form：代码 + 持仓金额 + 收益
   const [code, setCode] = useState("");
   const [name, setName] = useState("");
-  const [weight, setWeight] = useState("");
-  const [cost, setCost] = useState("");
+  const [amount, setAmount] = useState("");
+  const [profit, setProfit] = useState("");
   const [note, setNote] = useState("");
 
   useEffect(() => {
@@ -68,50 +107,63 @@ export default function HoldingsPage() {
     if (local[0]) setSelectedCode(local[0].code);
   }, []);
 
-  const refresh = useCallback(async (list: LocalHolding[]) => {
-    setLoading(true);
-    setErr("");
-    try {
-      const res = await fetch("/api/holdings", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          holdings: list.map(({ id: _id, ...rest }) => rest),
-          days: 60,
-        }),
-        cache: "no-store",
-      });
-      const data = await res.json();
-      if (!data.ok) throw new Error(data.error || "加载失败");
-      setAdvices(data.advices || []);
-      setQuotes(data.quotes || []);
-      setSeriesMap(data.seriesMap || {});
-      setUpdatedAt(data.updatedAt || "");
-      setDisclaimer(data.disclaimer || "");
-      setPortfolioChg(data.portfolio?.weightedChangePercent);
-      // 回填名称
-      if (data.holdings?.length) {
-        setHoldings((prev) => {
-          const byCode = new Map(
-            data.holdings.map((h: HoldingItem) => [h.code, h])
-          );
-          const next = prev.map((p) => {
-            const hit = byCode.get(p.code) as HoldingItem | undefined;
-            return hit ? { ...p, name: hit.name || p.name } : p;
-          });
-          saveLocal(next);
-          return next;
+  const refresh = useCallback(
+    async (list: LocalHolding[]) => {
+      setLoading(true);
+      setErr("");
+      try {
+        const res = await fetch("/api/holdings", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            holdings: list.map(({ id: _id, ...rest }) => rest),
+            days: 60,
+          }),
+          cache: "no-store",
         });
+        const data = await res.json();
+        if (!data.ok) throw new Error(data.error || "加载失败");
+        setAdvices(data.advices || []);
+        setQuotes(data.quotes || []);
+        setSeriesMap(data.seriesMap || {});
+        setUpdatedAt(data.updatedAt || "");
+        setDisclaimer(data.disclaimer || "");
+        setPortfolioChg(data.portfolio?.weightedChangePercent);
+        setPortfolioAmount(data.portfolio?.totalAmount);
+        setPortfolioProfit(data.portfolio?.totalProfit);
+        setPortfolioPnlPct(data.portfolio?.portfolioPnlPct);
+        // 回填名称与自动仓位
+        if (data.holdings?.length) {
+          setHoldings((prev) => {
+            // 默认观察组合时不写本地
+            if (prev.length === 0) return prev;
+            const byCode = new Map(
+              data.holdings.map((h: HoldingItem) => [h.code, h])
+            );
+            const next = prev.map((p) => {
+              const hit = byCode.get(p.code) as HoldingItem | undefined;
+              if (!hit) return p;
+              return {
+                ...p,
+                name: hit.name || p.name,
+                weight: hit.weight ?? p.weight,
+              };
+            });
+            saveLocal(next);
+            return next;
+          });
+        }
+        if (!selectedCode && data.holdings?.[0]?.code) {
+          setSelectedCode(data.holdings[0].code);
+        }
+      } catch (e) {
+        setErr(e instanceof Error ? e.message : String(e));
+      } finally {
+        setLoading(false);
       }
-      if (!selectedCode && data.holdings?.[0]?.code) {
-        setSelectedCode(data.holdings[0].code);
-      }
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
-    } finally {
-      setLoading(false);
-    }
-  }, [selectedCode]);
+    },
+    [selectedCode]
+  );
 
   useEffect(() => {
     if (!hydrated) return;
@@ -132,13 +184,29 @@ export default function HoldingsPage() {
       setErr("该代码已在持仓中");
       return;
     }
+    const amountNum = parseNum(amount);
+    const profitNum = parseNum(profit);
+    if (amountNum === undefined || amountNum <= 0) {
+      setErr("请填写持仓金额（元，当前市值）");
+      return;
+    }
+    if (profitNum === undefined) {
+      setErr("请填写持有收益（元，浮亏填负数）");
+      return;
+    }
+    if (amountNum - profitNum <= 0 && profitNum >= 0) {
+      // 成本金额 = 金额 - 收益；若收益过大导致成本非正，提示
+      setErr("收益不能大于等于持仓金额（成本金额需为正）");
+      return;
+    }
+
     const item: LocalHolding = {
       id: uid(),
       code: c,
       name: name.trim() || c,
       type: "etf",
-      weight: weight ? Number(weight) : undefined,
-      cost: cost ? Number(cost) : undefined,
+      amount: amountNum,
+      profit: profitNum,
       note: note.trim() || undefined,
     };
     const next = [...holdings, item];
@@ -147,8 +215,8 @@ export default function HoldingsPage() {
     setSelectedCode(c);
     setCode("");
     setName("");
-    setWeight("");
-    setCost("");
+    setAmount("");
+    setProfit("");
     setNote("");
     setErr("");
     refresh(next);
@@ -188,6 +256,9 @@ export default function HoldingsPage() {
           code: a.code,
           name: a.name,
           type: "etf" as const,
+          amount: a.amount,
+          profit: a.profit,
+          weight: a.weight,
         }));
 
   const selectedSeries = selectedCode ? seriesMap[selectedCode] || [] : [];
@@ -215,27 +286,49 @@ export default function HoldingsPage() {
       <NavBar />
       <SiteHeader
         title="我的持仓 · 每日操作建议"
-        subtitle="可添加 ETF/场内基金持仓（浏览器本地保存）。实时净值走势 + 规则化操作建议。默认预置半导体/科创/通信/宽基/红利观察组合。"
+        subtitle="按持仓金额与持有收益添加 ETF/场内基金（浏览器本地保存）。自动算仓位占比与盈亏%，附规则化操作建议与净值走势。"
         onRefresh={() => refresh(holdings)}
         loading={loading}
         updatedText={updatedText}
       />
 
-      {portfolioChg !== undefined ? (
-        <section className="panel mb-5 p-4">
-          <div className="text-sm text-[var(--muted)]">组合加权涨跌（按仓位）</div>
+      <section className="panel mb-5 grid gap-4 p-4 sm:grid-cols-2 lg:grid-cols-4">
+        <div>
+          <div className="text-sm text-[var(--muted)]">组合持仓金额</div>
+          <div className="mt-1 text-2xl font-semibold tabular-nums">
+            {fmtMoney(portfolioAmount)}
+          </div>
+        </div>
+        <div>
+          <div className="text-sm text-[var(--muted)]">组合持有收益</div>
           <div
-            className={`mt-1 text-3xl font-semibold tabular-nums ${pctClass(portfolioChg)}`}
+            className={`mt-1 text-2xl font-semibold tabular-nums ${pctClass(portfolioProfit || 0)}`}
           >
-            {fmtPct(portfolioChg)}
+            {fmtMoney(portfolioProfit, true)}
+          </div>
+        </div>
+        <div>
+          <div className="text-sm text-[var(--muted)]">组合盈亏%</div>
+          <div
+            className={`mt-1 text-2xl font-semibold tabular-nums ${pctClass(portfolioPnlPct || 0)}`}
+          >
+            {portfolioPnlPct !== undefined ? fmtPct(portfolioPnlPct) : "-"}
+          </div>
+        </div>
+        <div>
+          <div className="text-sm text-[var(--muted)]">组合加权涨跌（今日）</div>
+          <div
+            className={`mt-1 text-2xl font-semibold tabular-nums ${pctClass(portfolioChg || 0)}`}
+          >
+            {portfolioChg !== undefined ? fmtPct(portfolioChg) : "-"}
           </div>
           <div className="mt-1 text-xs text-[var(--muted)]">
             {holdings.length
               ? `本地持仓 ${holdings.length} 只`
-              : "当前为默认观察组合（未保存本地持仓）"}
+              : "当前为默认观察组合（示例金额）"}
           </div>
-        </section>
-      ) : null}
+        </div>
+      </section>
 
       {/* 添加持仓 */}
       <section className="panel mb-5 p-4">
@@ -254,26 +347,33 @@ export default function HoldingsPage() {
             className="rounded-xl border border-[var(--line)] bg-black/20 px-3 py-2 text-sm outline-none focus:border-blue-400/60"
           />
           <input
-            value={weight}
-            onChange={(e) => setWeight(e.target.value)}
-            placeholder="仓位% 如 30"
+            value={amount}
+            onChange={(e) => setAmount(e.target.value)}
+            placeholder="持仓金额(元) 如 30000"
+            inputMode="decimal"
             className="rounded-xl border border-[var(--line)] bg-black/20 px-3 py-2 text-sm outline-none focus:border-blue-400/60"
           />
           <input
-            value={cost}
-            onChange={(e) => setCost(e.target.value)}
-            placeholder="成本净值（可选）"
+            value={profit}
+            onChange={(e) => setProfit(e.target.value)}
+            placeholder="持有收益(元) 如 1200 或 -500"
+            inputMode="decimal"
             className="rounded-xl border border-[var(--line)] bg-black/20 px-3 py-2 text-sm outline-none focus:border-blue-400/60"
           />
           <input
             value={note}
             onChange={(e) => setNote(e.target.value)}
-            placeholder="备注"
+            placeholder="备注（可选）"
             className="rounded-xl border border-[var(--line)] bg-black/20 px-3 py-2 text-sm outline-none focus:border-blue-400/60"
           />
           <button className="btn btn-active" onClick={addHolding}>
             添加
           </button>
+        </div>
+        <div className="mt-2 text-xs leading-5 text-[var(--muted)]">
+          录入方式：填<strong className="text-[#d7e3ff]">当前持仓金额</strong>
+          与<strong className="text-[#d7e3ff]">持有收益</strong>
+          （浮亏填负数）。系统自动算成本金额、盈亏%与组合仓位占比。
         </div>
         <div className="mt-3 flex flex-wrap gap-2">
           <button className="btn" onClick={useDefault}>
@@ -306,6 +406,9 @@ export default function HoldingsPage() {
               : displayList.map((h) => {
                   const a = adviceMap.get(h.code);
                   const q = quoteMap.get(h.code);
+                  const showAmount = a?.amount ?? h.amount;
+                  const showProfit = a?.profit ?? h.profit;
+                  const showWeight = a?.weight ?? h.weight;
                   return (
                     <div
                       key={(h as LocalHolding).id || h.code}
@@ -327,14 +430,30 @@ export default function HoldingsPage() {
                               {a.action}
                             </span>
                           ) : null}
-                          {h.weight !== undefined ? (
-                            <span className="tag">仓位 {h.weight}%</span>
+                          {showAmount !== undefined ? (
+                            <span className="tag">
+                              金额 {fmtMoney(showAmount)}
+                            </span>
+                          ) : null}
+                          {showProfit !== undefined ? (
+                            <span
+                              className={`tag ${
+                                showProfit >= 0 ? "tag-hot" : "tag-good"
+                              }`}
+                            >
+                              收益 {fmtMoney(showProfit, true)}
+                            </span>
+                          ) : null}
+                          {showWeight !== undefined ? (
+                            <span className="tag">仓位 {showWeight}%</span>
                           ) : null}
                           {a?.pnlPct !== undefined ? (
                             <span
-                              className={`tag ${a.pnlPct >= 0 ? "tag-hot" : "tag-good"}`}
+                              className={`tag ${
+                                a.pnlPct >= 0 ? "tag-hot" : "tag-good"
+                              }`}
                             >
-                              成本盈亏 {fmtPct(a.pnlPct)}
+                              盈亏 {fmtPct(a.pnlPct)}
                             </span>
                           ) : null}
                           {a ? (
@@ -416,6 +535,39 @@ export default function HoldingsPage() {
                     </span>
                     <span className="tag">{selectedAdvice.horizon}</span>
                   </div>
+                  {(selectedAdvice.amount !== undefined ||
+                    selectedAdvice.profit !== undefined) && (
+                    <div className="mb-2 flex flex-wrap gap-3 text-sm">
+                      {selectedAdvice.amount !== undefined ? (
+                        <span>
+                          持仓金额{" "}
+                          <strong className="tabular-nums">
+                            {fmtMoney(selectedAdvice.amount)}
+                          </strong>
+                        </span>
+                      ) : null}
+                      {selectedAdvice.profit !== undefined ? (
+                        <span>
+                          持有收益{" "}
+                          <strong
+                            className={`tabular-nums ${pctClass(selectedAdvice.profit)}`}
+                          >
+                            {fmtMoney(selectedAdvice.profit, true)}
+                          </strong>
+                        </span>
+                      ) : null}
+                      {selectedAdvice.pnlPct !== undefined ? (
+                        <span>
+                          盈亏{" "}
+                          <strong
+                            className={`tabular-nums ${pctClass(selectedAdvice.pnlPct)}`}
+                          >
+                            {fmtPct(selectedAdvice.pnlPct)}
+                          </strong>
+                        </span>
+                      ) : null}
+                    </div>
+                  )}
                   <ul className="space-y-1 text-sm leading-6 text-[#d7e3ff]">
                     {selectedAdvice.reasons.map((r, i) => (
                       <li key={i}>· {r}</li>
