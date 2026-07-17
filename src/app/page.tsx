@@ -8,6 +8,7 @@ import type {
   StrategyMeta,
   StockQuote,
 } from "@/lib/types";
+import { NavBar } from "@/components/ui";
 
 function fmtPrice(n: number) {
   if (!Number.isFinite(n)) return "-";
@@ -108,7 +109,8 @@ export default function Home() {
 
   useEffect(() => {
     load(strategy);
-    const t = setInterval(() => load(strategy), 90_000);
+    // 交易时段更勤；统一 45s 自动刷新（服务端缓存约 30–60s）
+    const t = setInterval(() => load(strategy), 45_000);
     return () => clearInterval(t);
   }, [strategy, load]);
 
@@ -146,6 +148,7 @@ export default function Home() {
 
   return (
     <main className="mx-auto max-w-7xl px-4 py-6 md:px-6 md:py-10">
+      <NavBar />
       {/* Header */}
       <header className="mb-6 flex flex-col gap-4 md:mb-8 md:flex-row md:items-end md:justify-between">
         <div>
@@ -160,8 +163,8 @@ export default function Home() {
             </span>
           </h1>
           <p className="mt-2 max-w-2xl text-sm leading-6 text-[var(--muted)]">
-            基于东方财富公开行情，对沪深 A 股做动量 / 资金 / 估值 / 热度 / 稳健五维评分，
-            输出可解释推荐榜。后续可按需求加回测、自选、消息面。
+            基于东方财富公开行情，对沪深 A 股做动量 / 资金 / 估值 / 热度 / 稳健五维评分。
+            另含板块三维分析、ETF 净值走势、持仓操作建议（基金视角）。
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">

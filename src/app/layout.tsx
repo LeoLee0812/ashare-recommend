@@ -2,9 +2,9 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "A股智能推荐 | Asharе Picks",
+  title: "A股/基金智能看板 | Ashare Picks",
   description:
-    "多因子 A 股推荐看板：均衡精选 / 强势动量 / 低估稳健 / 热度资金。数据仅供学习研究，不构成投资建议。",
+    "多因子个股推荐 · 板块三维分析 · ETF净值走势 · 持仓操作建议。数据仅供学习研究，不构成投资建议。",
   icons: { icon: "/favicon.ico" },
 };
 

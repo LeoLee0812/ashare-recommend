@@ -9,7 +9,7 @@ import {
 import type { StrategyKey } from "@/lib/types";
 
 export const runtime = "nodejs";
-export const revalidate = 60;
+export const revalidate = 30;
 
 export async function GET(req: Request) {
   try {

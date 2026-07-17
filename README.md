@@ -1,22 +1,25 @@
-# A股智能推荐 · Ashare Picks
+# A股/基金智能看板 · Ashare Picks
 
-多因子 A 股推荐看板（前后端一体，Next.js）。
+多因子 A 股推荐 + 板块分析 + ETF/持仓看板（Next.js 全栈）。
 
 ## 功能
 
-- 市场概览：上证 / 深成 / 创业板 + 涨跌家数
-- 四套策略：均衡精选 / 强势动量 / 低估稳健 / 热度资金
-- 五维打分：动量、资金、估值、热度、稳健 + 可解释推荐理由
-- 搜索个股（代码 / 名称）
-- 免责声明：仅供学习研究，不构成投资建议
+1. **个股推荐**：上证/深成/创业板 + 四策略五维打分
+2. **板块三维分析**：技术 / 消息 / 政策 + 基金视角建议（重点覆盖持仓相关板块）
+3. **ETF / 场内基金**：实时行情 + 近 60 日净值/收盘走势图
+4. **我的持仓**：浏览器本地添加持仓，每日操作建议 + 组合加权涨跌 + 走势图
+5. **实时刷新**：前端 45s / 板块 60s 自动刷新；服务端缓存 15–60s
 
 ## 技术
 
-- Next.js App Router + TypeScript + Tailwind
-- 数据源：东方财富 clist 公开接口 + 腾讯指数/个股
+- Next.js App Router + TypeScript + Tailwind + Recharts
+- 数据源：东方财富 clist / kline / 基金净值 + 腾讯行情
 - API：
   - `GET /api/recommend?strategy=balanced&top=20`
   - `GET /api/stocks?q=茅台` / `?mode=gainers`
+  - `GET /api/sectors?type=all|industry|concept`
+  - `GET /api/etf?sort=amount|change` / `?q=芯片` / `?code=512480`
+  - `GET|POST /api/holdings`（持仓建议 + 走势）
 
 ## 本地
 
@@ -27,7 +30,7 @@ npm run dev
 
 ## 部署
 
-- 生产域名：`https://ashare.saveme505.help` / `https://stock.saveme505.help`
+- 生产域名：`https://stock.saveme505.help` / `https://ashare.saveme505.help`
 - GitHub：`https://github.com/LeoLee0812/ashare-recommend`
 - Vercel 已关联 Git：`main` 分支 push 自动生产部署
 
@@ -43,3 +46,6 @@ systemctl status ashare-auto-git
 tail -f /var/log/ashare-auto-git.log
 ```
 
+## 免责
+
+本站数据仅供学习研究，**不构成任何投资建议**。股市有风险，入市需谨慎。
